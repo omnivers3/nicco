@@ -1,0 +1,18 @@
+[package]
+name = "nicco"
+version = "0.1.0"
+authors = ["Perry Birch <perrybirch@vizidrix.com>"]
+description = "Elm inspired virtual dom implementation targeting Rust + Wasm"
+documentation = "https://docs.rs/nicco/nicco"
+homepage = "https://github.com/omnivers3/nicco/nicco"
+repository = "https://github.com/omnivers3/nicco/nicco"
+readme = "../README.md"
+keywords = ["omnivers3", "nicco", "wasm", "web", "dom", "vdom"]
+license = "MIT"
+publish = false
+
+[dependencies]
+proc-macro2 = { version = "0.4", features = ["nightly"] }
+quote = "0.6"
+sink = "0.1"
+syn = { version = "0.15.1", features = ["full"] }

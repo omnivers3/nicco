@@ -1,0 +1,22 @@
+[package]
+name = "rsx"
+version = "0.1.0"
+authors = ["Perry Birch <perrybirch@vizidrix.com>"]
+description = "Elm inspired macros for use with vdom"
+documentation = "https://docs.rs/nicco/rsx"
+homepage = "https://github.com/omnivers3/nicco/rsx"
+repository = "https://github.com/omnivers3/nicco/rsx"
+readme = "../README.md"
+keywords = ["omnivers3", "nicco", "rsx", "wasm", "web", "dom", "vdom"]
+license = "MIT"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+// syn = { version = "0.15.1", features = ["full"] }
+// quote = "0.6"
+proc-macro2 = { version = "0.4", features = ["nightly"] }
+nicco = { path = "../nicco" }
+// vdom = { path = "../vdom" }
