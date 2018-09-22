@@ -1,4 +1,4 @@
-use proc_macro2::{ Delimiter, Ident, TokenTree, TokenStream };
+use proc_macro2::{ Delimiter, Group, Ident, Span, TokenTree, TokenStream };
 // use proc_macro2::{ Group, Ident, TokenStream };
 // use syn::parse::{ Parse, ParseStream };
 // use syn::{ parse2 };
@@ -12,15 +12,21 @@ use sink::{ ISink };
 
 pub static EMPTY_TEMPLATE: &str = "Template is empty";
 pub static AMBIGUOUS_EMPTY_LIST: &str = "Ambiguous empty list. This can be ommitted, or you can try adding attributes or children";
+pub static EMPTY_ROOT_LIST_OPTIONAL: &str = "Template is empty, root list is optional";
 pub static EMPTY_LISTS_OPTIONAL: &str = "Empty trailing lists are optional following an element";
 pub static URECOGNIZED_NODE_TYPE: &str = "Unrecognized node type";
 pub static UNEXPECTED_LITERAL: &str = "Unexpected literal";
+pub static ELEMENT_FOLLOWING_ROOT_GROUP: &str = "Unexpected element following root group";
+pub static INVALID_NESTED_GROUPS: &str = "Invalid group nesting";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Container {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Element {}
+pub struct Element {
+    kind: Ident,
+    attributes: Vec<Attribute>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attribute {}
@@ -120,11 +126,68 @@ where
     println!("Final State: {:?}", state);
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 enum ParseModes {
+    Error,
     Empty,
+    RootGroup (Group),
     Element (Ident),
+    ElementGroup (Group),
+    ElementGroups (Group),
 }
+
+impl PartialEq for ParseModes {
+    fn eq(&self, other: &ParseModes) -> bool {
+        match self {
+            ParseModes::Error => {
+                match other {
+                    ParseModes::Error => true,
+                    _ => false,
+                }
+            }
+            ParseModes::Empty => {
+                match other {
+                    ParseModes::Empty => true,
+                    _ => false,
+                }
+            },
+            ParseModes::Element (element) => {
+                match other {
+                    ParseModes::Element (other) => {
+                        element == other
+                    },
+                    _ => false,
+                }
+            },
+            ParseModes::RootGroup (_group) => {
+                match other {
+                    ParseModes::RootGroup (_group) => {
+                        true
+                    },
+                    _ => false,
+                }
+            },
+            ParseModes::ElementGroup (_group) => {
+                match other {
+                    ParseModes::ElementGroup (_group) => {
+                        true
+                    },
+                    _ => false,
+                }
+            },
+            ParseModes::ElementGroups (_group) => {
+                match other {
+                    ParseModes::ElementGroups (_group) => {
+                        true
+                    },
+                    _ => false,
+                }
+            },
+        }
+    }
+}
+
+impl Eq for ParseModes {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ParseState {
@@ -146,19 +209,75 @@ where
     println!("Input: {:?}", input);
     let state = input
         .into_iter()
-        .fold(ParseState::default(), | mut s, node | {
+        .fold(ParseState::default(), | mut state, node | {
+            let mode = state.mode.clone();
             match node {
                 TokenTree::Ident (ident) => {
-                    println!("Identity: {:?}", ident);
-                    s.mode = ParseModes::Element(ident.clone());
-                    check_kind(options, sink.clone(), &ident);
+                    // match state.mode.clone() {
+                    match mode {
+                        ParseModes::Error => {
+                            //
+                        },
+                        ParseModes::Empty => { // Not yet parsing anything
+                            println!("Identity: {:?}", ident);
+                            state.mode = ParseModes::Element(ident.clone());
+                            check_kind(options, sink.clone(), &ident);
+                        },
+                        ParseModes::RootGroup (group) => { // Found an identity following a root group node
+                            println!("Invalid identity after root group: {:?}", group);
+                            // TODO: Bridge the span in the error to cover both the group and the element tags?
+                            sink.error(ELEMENT_FOLLOWING_ROOT_GROUP);
+                            state.mode = ParseModes::Element(ident.clone());
+                        },
+                        ParseModes::Element (prev_element) => { // Found an adjacent element to one in flight
+                            println!("Neighbor element: {:?}", ident);
+                            sink.element(Element { kind: prev_element.clone(), attributes: vec![] });
+                            state.mode = ParseModes::Element(ident.clone());
+                            check_kind(options, sink.clone(), &ident);
+                        },
+                        ParseModes::ElementGroup (_group) => {
+                            //
+                        },
+                        ParseModes::ElementGroups (_group) => {
+                            //
+                        },
+                    }
+                    
                 },
                 TokenTree::Group (group) => {
                     println!("Group: {:?}", group);
                     if group.delimiter() == Delimiter::Bracket {
                         println!("Group Found");
+                        match mode {
+                            ParseModes::Error => {
+                                //
+                            },
+                            ParseModes::Empty => {
+                                let sink = sink.clone();
+                                let inner_state = parse_impl(options, sink, group.stream());
+                                println!("Inner State: {:?}", inner_state);
+                                state.mode = ParseModes::RootGroup (group);
+                            },
+                            ParseModes::RootGroup (_group) => {
+                                // Shouldn't allow group directly inside another group
+                                sink.error(INVALID_NESTED_GROUPS);
+                                state.mode = ParseModes::Error;
+                            },
+                            ParseModes::Element (_prev_element) => {
+                                // capture prev state as nested child
+                                state.mode = ParseModes::ElementGroup (group);
+                            },
+                            ParseModes::ElementGroup (_prev_group) => {
+                                // capture prev state as nested child
+                                state.mode = ParseModes::ElementGroups (group);
+                            },
+                            ParseModes::ElementGroups (_prev_group) => {
+                                //
+                            },
+                        }
+                    } else {
+                        sink.error("Unexpected delimiter");
                     }
-                    sink.error("Unexpected delimiter");
                 },
                 TokenTree::Punct (_punct) => {
                     sink.error("Unexpected punctuation");
@@ -167,9 +286,18 @@ where
                     sink.error(UNEXPECTED_LITERAL);
                 },
             }
-            println!("State: {:?}", s);
-            s
+            println!("State: {:?}", state);
+            state
         });
+    let mode = state.mode.clone();
+    match mode {
+        ParseModes::RootGroup (_) => {
+            sink.warning(EMPTY_ROOT_LIST_OPTIONAL);
+        },
+        _ => {
+            // TODO: evaluate other ending states for validity
+        }
+    }
     state
 }
 
@@ -274,36 +402,77 @@ mod tests {
     }
 
     #[test]
+    fn should_provide_error_for_element_following_list() {
+        let expected_events = vec![
+            TreeEvents::Message(Error::call_site(ELEMENT_FOLLOWING_ROOT_GROUP)),
+        ];
+        let input = quote! { [] html };
+        let sink = &VecTreeSink::new();
+        parse(None, sink, input);
+        assert_eq!(expected_events, sink.data());
+    }
+
+    #[test]
+    fn should_parse_empty_list_of_elements() {
+        let expected_events = vec![
+            TreeEvents::Message(Warning::call_site(EMPTY_ROOT_LIST_OPTIONAL)),
+        ];
+        let input = quote! { [] };
+        let sink = &VecTreeSink::new();
+        parse(None, sink, input);
+        assert_eq!(expected_events, sink.data());
+    }
+
+    #[test]
+    fn should_parse_root_list_of_elements() {
+        let expected_events: Vec<TreeEvents> = vec![
+            // TreeEvents::Message(Warning::call_site(EMPTY_LISTS_OPTIONAL)),
+        ];
+        let input = quote! { [ html html ] };
+        let sink = &VecTreeSink::new();
+        parse(None, sink, input);
+        assert_eq!(expected_events, sink.data());
+    }
+
+    // #[test]
     fn should_parse_stand_alone_element() {
         let expected_events = vec![
-            TreeEvents::Parse(ParseEvents::ParsedElement(Element{})),
+            TreeEvents::Parse(ParseEvents::ParsedElement(Element { kind: Ident::new("html", Span::call_site()), attributes: vec![] })),
         ];
-        let expected_messages = Messages::empty();
         let input = quote! { html };
         let sink = &VecTreeSink::new();
         parse(None, sink, input);
         assert_eq!(expected_events, sink.data());
     }
 
-    #[test]
+    // #[test]
     fn should_parse_stand_alone_element_with_warning_on_ambiguous_empty_list() {
         let expected_events = vec![
             TreeEvents::Message(Warning::call_site(AMBIGUOUS_EMPTY_LIST)),
         ];
-        let expected_messages = Messages::empty();
         let input = quote! { html [] };
         let sink = &VecTreeSink::new();
         parse(None, sink, input);
         assert_eq!(expected_events, sink.data());
     }
 
-    #[test]
+    // #[test]
     fn should_parse_stand_alone_element_with_warning_on_ambiguous_empty_lists() {
         let expected_events = vec![
             TreeEvents::Message(Warning::call_site(EMPTY_LISTS_OPTIONAL)),
         ];
-        let expected_messages = Messages::empty();
         let input = quote! { html [][] };
+        let sink = &VecTreeSink::new();
+        parse(None, sink, input);
+        assert_eq!(expected_events, sink.data());
+    }
+
+    // #[test]
+    fn should_parse_adjacent_elements() {
+        let expected_events: Vec<TreeEvents> = vec![
+            // TreeEvents::Message(Warning::call_site(EMPTY_LISTS_OPTIONAL)),
+        ];
+        let input = quote! { html html };
         let sink = &VecTreeSink::new();
         parse(None, sink, input);
         assert_eq!(expected_events, sink.data());
@@ -329,81 +498,6 @@ mod tests {
 // }
 
 // #[derive(Clone, Debug, Eq, PartialEq)]
-// pub struct Element {
-//     kind: Ident,
-//     attributes: Vec<Attribute>,
-//     messages: Vec<Message>,
-// }
-
-// impl IValidated for Element {
-//     fn get_messages(&self) -> Vec<Message> {
-//         self.messages.clone()
-//     }
-// }
-
-// impl Parse for Element {
-//     fn parse(input: ParseStream) -> Result<Self> {
-//         input
-//             .parse()
-//             .map(|kind: Ident| {
-//                 Element {
-//                     kind: kind.to_owned(),
-//                     attributes: vec![], // TODO: need to parse attrs
-//                     messages: vec![
-//                         Info::call_site(&format!("Parsing Element Kind: {:?}", kind))
-//                     ],
-//                 }
-//             })
-//     }
-// }
-
-// pub struct ElementList {
-//     elements: Vec<Element>,
-// }
-
-// impl Parse for ElementList {
-//     fn parse(input: ParseStream) -> Result<Self> {
-//         input
-//             .parse()
-//             .map(|elements: Group| {
-//                 println!("ElementList: {:?}", elements.stream());
-//                     // .foldr(|mut list, element| {
-//                     //     list.push(element);
-//                     //     list
-//                     // }, vec![])
-//                     // .map(|elements| ElementList { elements })
-//                 ElementList { elements: vec![] }
-//             })
-//     }
-// }
-
-// fn checked_parse_element(input: ParseStream) -> Option<Result<Element>> {
-//     let lookahead = input.lookahead1();
-//     if !lookahead.peek(syn::Ident) {
-//         return None
-//     }
-//     // println!("Peek ident found");
-//     return Some(input.parse())
-//         // .map(|element: Element| {
-//         //     element
-//         //     // Node::new(None, None, Some(vec![
-//         //     //     Info::call_site(&format!("Element: {:?}", element)),
-//         //     // ]))
-//         // })
-//     // )
-// }
-
-// fn checked_parse_elements(input: ParseStream) -> Option<Result<ElementList>> {
-//     let lookahead = input.lookahead1();
-//     if !lookahead.peek(syn::Lit) {
-//         println!("No literal found");
-//         return None
-//     }
-//     println!("Literal found");
-//     return Some(input.parse())
-// }
-
-// #[derive(Clone, Debug, Eq, PartialEq)]
 // pub struct Node {
 //     element: Element,
 //     children: Vec<Node>,
@@ -415,182 +509,5 @@ mod tests {
 //             element,
 //             children: children,
 //         }
-//     }
-// }
-
-// impl Parse for Node {
-//     fn parse(input: ParseStream) -> syn::parse::Result<Self> {
-//         let lookahead = input.lookahead1();
-//         if lookahead.peek(syn::Ident) { // Element not list
-
-//             return Ok (Node::new(Element{}, vec![]))
-            
-//         }
-//         Ok (Node::new(Element{}, vec![]))
-//     }
-// }
-    //     if input.is_empty() {
-    //         return Ok (Node::new(None, None, Some(vec![
-    //             Warning::call_site(EMPTY_TEMPLATE),
-    //         ])))
-    //     }
-    //     println!("Begin parsing elements");
-    //     let elements: Vec<Node> = vec![];
-    //     // Root node is defined as an element so try to parse all found
-    //     if let Some (element_result) = checked_parse_element(input) {
-    //         println!("Parsed element");
-    //         if let Ok (element) = element_result {
-    //             elements.push(Node::new(Some(element), None, None));
-    //             loop { // Grab all the elements that can be found
-    //                 if let Some (elements) = checked_parse_element(input) {
-    //                     println!("Parsed elements: {:?}", elements);
-    //                     // elements.append(elements);
-    //                     continue;
-    //                 }
-    //                 break;
-    //             }
-    //             // let nodes = elements.into_iter().map(|element| {
-    //             //     Node::new(Some(element), None, None)
-    //             // });
-    //             return Ok (Node::new(None, Some(elements), Some(vec![
-    //                 Info::call_site(&format!("Found [{:?}] elements", elements.len())),
-    //             ])))
-    //         }
-    //     }
-    //     println!("Finished parsing elements: {:?}", elements);
-    //     if let Some (elements) = checked_parse_elements(input) {
-
-    //     }
-    //     // let lookahead = input.lookahead1();
-    //     // if lookahead.peek(syn::Ident) {
-    //     //     // println!("Peek ident found");
-    //     //     return input
-    //     //         .parse()
-    //     //         .map(|element: Element| {
-    //     //             // println!("Element: {:?}", element);
-    //     //             Node::new(None, None, Some(vec![
-    //     //                 Info::call_site(&format!("Element: {:?}", element)),
-    //     //             ]))
-    //     //         })
-    //     //     // // Recursively parse nodes from the next group section if found
-    //     //     // if !input.is_empty() {
-                
-    //     //     // }
-    //     // }
-    //     // if lookahead.peek(syn::UseTree::Group) {
-    //     //     println!("Peek group found");
-    //     // }
-    //     input
-    //         .parse()
-    //         .map(|expr: Group| {
-    //             Node::new(None, None, Some(vec![
-    //                 Info::call_site(&format!("Top Level Group: {:?}", expr)),
-    //             ]))
-    //         })
-    //         // .map(|expr: TokenStream| {
-    //         //     println!("Second expr: {:?}", expr);
-    //         //     Node::new(None)
-    //         // })
-    //         .or_else(|err| {
-    //             let root_not_list_warning = Warning::call_site(&format!("Root wasn't a list: {:?}", err));
-    //             // Span::call_site().unstable().warning(format!("Root wasn't a list: {:?}", err)).emit();
-    //             // println!("Fall back to top level element");
-    //             input
-    //                 .parse()
-    //                 // .map(|element: Element| {
-    //                 .map(|element: TokenStream| {
-    //                     // println!("Element: {:?}", element);
-    //                     // Node::new(Some(element))
-    //                     Node::new(None, None, Some(vec![
-    //                         root_not_list_warning,
-    //                         Info::call_site(&format!("Element: {:?}", element)),
-    //                     ]))
-    //                 })
-    //         })
-    //         .or_else(|err| {
-    //             Ok (
-    //                 Node::new(None, None, Some(vec![
-    //                     Warning::call_site(&format!("Root also wasn't an element: {:?}", err)),
-    //                 ]))
-    //             )
-    //         })
-    //         // .map_err(|err| {
-    //         //     Node::new(None, None, Some(vec![
-    //         //         Warning::call_site(&format!("Root also wasn't an element: {:?}", err)),
-    //         //     ]))
-    //         //     // Span::call_site().unstable().warning(format!("Root also wasn't an element: {:?}", err)).emit();
-    //         //     // err
-    //         // })
-    // }
-    // // input
-    // //     .parse()
-    // //     .map(|_root: Ident| {
-    // //         println!("Got root children");
-    // //         Node {
-    // //             element: None,
-    // //             children: vec![],
-    // //         }
-    // //     })
-// }
-
-// fn is_next_ident(input: ParseStream) -> bool {
-//     let lookahead = input.lookahead1();
-//     lookahead.peek(syn::Ident)
-// }
-
-// pub static EMPTY_TEMPLATE: &str = "Template is empty";
-
-
-//     // #[test]
-//     fn should_parse_template_with_empty_top_level_list() {
-//         let expected = Node::new(None, None, None);
-//         let input = quote! {[]};
-//         let actual = parse(input);
-//         assert_eq!(expected, actual.trim_messages());
-//     }
-
-//     #[test]
-//     fn should_parse_single_element() {
-//         let expected = Node::new(None, None, None);
-//         let input = quote! {html};
-//         let actual = parse(input);
-//         let messages = actual.messages.clone();
-//         assert_eq!(expected, actual.trim_messages());
-//         assert_eq!(0, messages.len(), "{:?}", messages);
-//     }
-
-//     // #[test]
-//     fn should_parse_invlid_with_correct_messages() {
-//         let expected = Node::new(None, None, None);
-//         let input = quote! {
-//             [] html
-//         };
-//         let actual = parse(input);
-//         assert_eq!(expected, actual.trim_messages());
-//         // TODO: Validate messages
-//     }
-
-//     // #[test]
-//     fn should_parse_elemnt_with_empty_attributes() {
-//         let expected = Node::new(None, None, None);
-//         let input = quote! {
-//             html []
-//         };
-//         let actual = parse(input);
-//         assert_eq!(expected, actual.trim_messages());
-//     }
-
-//     // #[test]
-//     fn should_parse_multiple_elements() {
-//         let expected = Node::new(None, Some(vec![
-//             Node::new(None, None, None),
-//             Node::new(None, None, None),
-//             Node::new(None, None, None),
-//         ]), None);
-//         let input = quote! {
-//             html html html
-//         };
-//         let actual = parse(input);
-//         assert_eq!(expected, actual.trim_messages());
 //     }
 // }
