@@ -22,6 +22,5 @@ extern crate quote;
 extern crate sink;
 extern crate syn;
 
-pub mod sinks;
 pub mod tokenizer;
 pub mod tree_builder;

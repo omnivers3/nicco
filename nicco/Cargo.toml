@@ -14,5 +14,5 @@ publish = false
 [dependencies]
 proc-macro2 = { version = "0.4", features = ["nightly"] }
 quote = "0.6"
-sink = "0.1"
+sink = { path = "../../sink/sink" }
 syn = { version = "0.15.1", features = ["full"] }
